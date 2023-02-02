@@ -139,6 +139,40 @@ func main() {
 			return sess.AuthPlain(username, password)
 		})
 	})
+	s.EnableAuth(sasl.Anonymous, func(conn *smtp.Conn) sasl.Server {
+		return sasl.NewAnonymousServer(func(trace string) error {
+			sess := conn.Session()
+			if sess == nil {
+				panic("No session when AUTH is called")
+			}
+
+			return nil
+		})
+	})
+	s.EnableAuth(sasl.Anonymous, func(conn *smtp.Conn) sasl.Server {
+		return sasl.NewAnonymousServer(func(trace string) error {
+			sess := conn.Session()
+			if sess == nil {
+				panic("No session when AUTH is called")
+			}
+
+			return nil
+		})
+	})
+	s.EnableAuth(sasl.OAuthBearer, func(conn *smtp.Conn) sasl.Server {
+		return sasl.NewOAuthBearerServer(func(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
+			sess := conn.Session()
+			if sess == nil {
+				panic("No session when AUTH is called")
+			}
+
+			if err := sess.AuthPlain(opts.Username, opts.Token); err != nil {
+				return &sasl.OAuthBearerError{}
+			}
+
+			return nil
+		})
+	})
 
 	log.Println("Starting server at", s.Addr)
 	if err := s.ListenAndServe(); err != nil {
