@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/mail"
 	"os"
@@ -32,10 +31,39 @@ type Session struct {
 	Message  *mail.Message
 }
 
-func (s *Session) AuthPlain(username, password string) error {
-	s.Username = username
-	s.Password = password
-	return nil
+// compile time check that struct implements the interface
+var _ smtp.AuthSession = (*Session)(nil)
+
+func (s *Session) AuthMechanisms() []string {
+	return []string{sasl.Anonymous, sasl.External, sasl.OAuthBearer, sasl.Plain}
+}
+
+// Auth is the handler for supported authenticators.
+func (s *Session) Auth(mech string) (sasl.Server, error) {
+	switch mech {
+	case sasl.Anonymous:
+		return sasl.NewAnonymousServer(func(trace string) error {
+			return nil
+		}), nil
+	case sasl.External:
+		return sasl.NewExternalServer(func(identity string) error {
+			return nil
+		}), nil
+	case sasl.OAuthBearer:
+		return sasl.NewOAuthBearerServer(func(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
+			s.Username = opts.Username
+			s.Password = opts.Token
+			return nil
+		}), nil
+	case sasl.Plain:
+		return sasl.NewPlainServer(func(identity, username, password string) error {
+			s.Username = username
+			s.Password = password
+			return nil
+		}), nil
+	default:
+		return sasl.NewPlainServer(nil), fmt.Errorf("invalid mech %s", mech)
+	}
 }
 
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
@@ -44,7 +72,7 @@ func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	return nil
 }
 
-func (s *Session) Rcpt(to string) error {
+func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	s.To = to
 	return nil
 }
@@ -94,20 +122,21 @@ func (s *Session) SaveMail() error {
 		}
 	}
 
-	if _, err := f.WriteString("\n\nBody:\n"); err != nil {
-		return err
-	}
-
-	for name, values := range s.Message.Header {
-		if _, err := f.WriteString(fmt.Sprintf("%s: %s\n", name, strings.Join(values, ", "))); err != nil {
+	if s.Message != nil {
+		if _, err := f.WriteString("\n\nBody:\n"); err != nil {
 			return err
 		}
+		for name, values := range s.Message.Header {
+			if _, err := f.WriteString(fmt.Sprintf("%s: %s\n", name, strings.Join(values, ", "))); err != nil {
+				return err
+			}
+		}
+		body, err := io.ReadAll(s.Message.Body)
+		if err != nil {
+			return err
+		}
+		f.Write(body)
 	}
-	body, err := ioutil.ReadAll(s.Message.Body)
-	if err != nil {
-		return err
-	}
-	f.Write(body)
 
 	return nil
 }
@@ -129,51 +158,6 @@ func main() {
 	s.MaxMessageBytes = 1024 * 1024
 	s.MaxRecipients = 50
 	s.AllowInsecureAuth = true
-	s.EnableAuth(sasl.Login, func(conn *smtp.Conn) sasl.Server {
-		return sasl.NewLoginServer(func(username, password string) error {
-			sess := conn.Session()
-			if sess == nil {
-				panic("No session when AUTH is called")
-			}
-
-			return sess.AuthPlain(username, password)
-		})
-	})
-	s.EnableAuth(sasl.Anonymous, func(conn *smtp.Conn) sasl.Server {
-		return sasl.NewAnonymousServer(func(trace string) error {
-			sess := conn.Session()
-			if sess == nil {
-				panic("No session when AUTH is called")
-			}
-
-			return nil
-		})
-	})
-	s.EnableAuth(sasl.Anonymous, func(conn *smtp.Conn) sasl.Server {
-		return sasl.NewAnonymousServer(func(trace string) error {
-			sess := conn.Session()
-			if sess == nil {
-				panic("No session when AUTH is called")
-			}
-
-			return nil
-		})
-	})
-	s.EnableAuth(sasl.OAuthBearer, func(conn *smtp.Conn) sasl.Server {
-		return sasl.NewOAuthBearerServer(func(opts sasl.OAuthBearerOptions) *sasl.OAuthBearerError {
-			sess := conn.Session()
-			if sess == nil {
-				panic("No session when AUTH is called")
-			}
-
-			if err := sess.AuthPlain(opts.Username, opts.Token); err != nil {
-				return &sasl.OAuthBearerError{}
-			}
-
-			return nil
-		})
-	})
-
 	log.Println("Starting server at", s.Addr)
 	if err := s.ListenAndServe(); err != nil {
 		log.Fatal(err)
